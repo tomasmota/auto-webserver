@@ -1,12 +1,14 @@
 #!/bin/bash
 
+fqdn=$1
+
 # If VM already exists, delete it
-if [[ $(hcloud server list | grep webserver) ]]; then 
-    hcloud server delete webserver
+if [[ $(hcloud server list | grep "$fqdn") ]]; then 
+    hcloud server delete "$fqdn"
 fi
 
 # Create VM
-server_ip=$(hcloud server create --type cx11 --image fedora-34 --name webserver --ssh-key ~/.ssh/gmail_rsa.pub | grep IPv4 | awk '{ print $2 }')
+server_ip=$(hcloud server create --type cx11 --image fedora-34 --name "$fqdn" --ssh-key ~/.ssh/gmail_rsa.pub | grep IPv4 | awk '{ print $2 }')
 
 echo "Server created with ip: $server_ip"
 
@@ -18,15 +20,15 @@ dns_zone=$(curl -sX GET "https://api.cloudflare.com/client/v4/zones" \
                 | tr -d '"'
 )
 
-# Using dns zone, fetch dns record for 'test.tomasmota.dev'
+# Using dns zone, fetch dns record for the desired fqdn
 dns_record_id=$(curl -sX GET "https://api.cloudflare.com/client/v4/zones/faf168b3fee15303eecb80fc186e1280/dns_records" \
                     -H "Authorization: Bearer $CF_TOKEN" \
                     -H "Content-Type:application/json" \
-                    | jq '.result[] | select(.name == "test.tomasmota.dev") | .id' \
+                    | jq '.result[] | select(.name == "$fqdn") | .id' \
                     | tr -d '"'
 )
 
-
+# If a dns entry already exists for the fqdn, just update it, otherwise create it from scratch
 if [[ ! -z $dns_record_id ]]; then
     echo "Dns record already exists, updating..."
     echo "zone: $dns_zone, id: $dns_record_id"
@@ -34,7 +36,7 @@ if [[ ! -z $dns_record_id ]]; then
     result=$(curl -sX PUT "https://api.cloudflare.com/client/v4/zones/$dns_zone/dns_records/$dns_record_id" \
         -H "Authorization: Bearer $CF_TOKEN" \
         -H "Content-Type:application/json" \
-        --data "{\"type\":\"A\",\"name\":\"test.tomasmota.dev\",\"content\":\"$server_ip\",\"ttl\":120}" \
+        --data "{\"type\":\"A\",\"name\":\""$fqdn"\",\"content\":\"$server_ip\",\"ttl\":120}" \
         | jq '.success'
     )
 
@@ -50,7 +52,7 @@ else
     result=$(curl -sX POST "https://api.cloudflare.com/client/v4/zones/$dns_zone/dns_records/" \
         -H "Authorization: Bearer $CF_TOKEN" \
         -H "Content-Type:application/json" \
-        --data "{\"type\":\"A\",\"name\":\"test.tomasmota.dev\",\"content\":\"$server_ip\",\"ttl\":120}" \
+        --data "{\"type\":\"A\",\"name\":\""$fqdn"\",\"content\":\"$server_ip\",\"ttl\":120}" \
         | jq '.success'
     )
 
@@ -67,16 +69,16 @@ echo "Sleeping for 20 seconds in order to let server start and dns records updat
 sleep 20
 
 # Add fingerprint
-ssh-keyscan test.tomasmota.dev >> ~/.ssh/known_hosts 2> /dev/null
+ssh-keyscan "$fqdn" >> ~/.ssh/known_hosts 2> /dev/null
 
 # Install and start caddy
 echo 'Installing Caddy...'
-ssh root@test.tomasmota.dev 'dnf install -y caddy'
+ssh root@"$fqdn" 'dnf install -y caddy'
 echo 'Starting Caddy...'
-ssh root@test.tomasmota.dev 'caddy reverse-proxy --from test.tomasmota.dev --to localhost:8080' &
+ssh root@"$fqdn" 'caddy reverse-proxy --from "$fqdn" --to localhost:8080' &
 
 # Create go webserver
-ssh root@test.tomasmota.dev 'cat <<EOF > main.go
+ssh root@"$fqdn" 'cat <<EOF > main.go
 package main
 
 import (
@@ -97,15 +99,15 @@ EOF'
 
 # Install and run go webserver
 echo 'Installing go...'
-ssh root@test.tomasmota.dev 'dnf install -y go'
+ssh root@"$fqdn" 'dnf install -y go'
 echo 'Starting webserver'
-ssh root@test.tomasmota.dev 'go run main.go' & sleep 5
+ssh root@"$fqdn" 'go run main.go' & sleep 5
 
 check_server () {
-    if [[ $(curl -Ls test.tomasmota.dev/success) = 'Hi there, I love success!' ]]; then 
+    if [[ $(curl -Ls "$fqdn"/success) = 'Hi there, I love success!' ]]; then 
         echo "Webserver is working!" 
         echo "Tearing down..."
-        hcloud server delete webserver
+        hcloud server delete "$fqdn"
         echo "Finished tear down, exiting"
         exit 0 
     fi
@@ -126,3 +128,6 @@ check_server
 # If we get here, it means it is still not working
 echo 'Still not working, exiting now'
 exit 1
+
+# TO-DO
+## Remove dns entry as part of teardown
