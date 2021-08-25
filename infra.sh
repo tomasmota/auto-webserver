@@ -131,3 +131,4 @@ exit 1
 
 # TO-DO
 ## Remove dns entry as part of teardown
+## Parameterize ssh key
